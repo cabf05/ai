@@ -6,32 +6,32 @@ from flask import Flask, request, redirect, session, render_template_string
 from PyPDF2 import PdfReader
 from docx import Document
 from openpyxl import load_workbook
-import pytesseract
-from PIL import Image
-import fitz  # PyMuPDF
-
-# Configuração do ambiente
-os.environ['NLTK_DATA'] = '/opt/render/nltk_data'
-pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-# Serviços de IA
 AI_SERVICES = {
+    'HuggingFace': {
+        'guide': [
+            '1. Acesse https://huggingface.co/settings/tokens',
+            '2. Crie um token com acesso "Read"',
+            '3. Cole o token abaixo'
+        ],
+        'api_url': 'https://api-inference.huggingface.co/models/facebook/bart-large-cnn'
+    },
     'OpenAI': {
         'guide': [
-            '1. Acesse https://platform.openai.com/',
-            '2. Crie uma API Key em "API Keys"',
+            '1. Acesse https://platform.openai.com/account/api-keys',
+            '2. Crie uma nova chave secreta',
             '3. Cole a chave abaixo'
         ],
         'api_url': 'https://api.openai.com/v1/chat/completions'
     },
     'Cohere': {
         'guide': [
-            '1. Acesse https://dashboard.cohere.ai/',
+            '1. Acesse https://dashboard.cohere.ai/api-keys',
             '2. Crie uma nova chave API',
-            '3. Cole a chave gerada abaixo'
+            '3. Cole a chave abaixo'
         ],
         'api_url': 'https://api.cohere.ai/v1/generate'
     }
@@ -40,14 +40,14 @@ AI_SERVICES = {
 HTML_BASE = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>Sistema de Resumo</title>
+    <title>Resumo de Documentos</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         .container { max-width: 800px; margin: 50px auto; }
         .card { padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        textarea { height: 400px; width: 100%; margin: 20px 0; }
+        textarea { height: 300px; width: 100%; margin: 20px 0; }
         pre { white-space: pre-wrap; background: #f8f9fa; padding: 15px; }
     </style>
 </head>
@@ -69,17 +69,8 @@ def extract_text(file):
         filename = file.filename
         
         if filename.endswith('.pdf'):
-            try:
-                pdf = PdfReader(io.BytesIO(content))
-                return '\n'.join([page.extract_text() for page in pdf.pages])
-            except:
-                doc = fitz.open(stream=content, filetype="pdf")
-                text = []
-                for page in doc:
-                    pix = page.get_pixmap(dpi=200)
-                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    text.append(pytesseract.image_to_string(img))
-                return '\n'.join(text)
+            pdf = PdfReader(io.BytesIO(content))
+            return '\n'.join([page.extract_text() for page in pdf.pages])
         
         elif filename.endswith('.docx'):
             doc = Document(io.BytesIO(content))
@@ -88,7 +79,7 @@ def extract_text(file):
         elif filename.endswith(('.xlsx', '.xls')):
             wb = load_workbook(io.BytesIO(content))
             return '\n'.join(' '.join(map(str, row)) for sheet in wb for row in sheet.iter_rows(values_only=True))
-            
+        
         return "Formato não suportado"
     except Exception as e:
         return f"Erro na extração: {str(e)}"
@@ -97,13 +88,23 @@ def generate_summary(text, service, api_key):
     try:
         prompt = f"Resuma este documento em português de forma clara e detalhada:\n\n{text}"
         
-        if service == 'OpenAI':
+        if service == 'HuggingFace':
+            headers = {'Authorization': f'Bearer {api_key}'}
+            response = requests.post(
+                AI_SERVICES[service]['api_url'],
+                headers=headers,
+                json={'inputs': prompt},
+                timeout=30
+            )
+            return response.json()[0]['summary_text']
+        
+        elif service == 'OpenAI':
             headers = {'Authorization': f'Bearer {api_key}'}
             data = {
                 "model": "gpt-3.5-turbo",
                 "messages": [{"role": "user", "content": prompt}]
             }
-            response = requests.post(AI_SERVICES[service]['api_url'], json=data, headers=headers, timeout=60)
+            response = requests.post(AI_SERVICES[service]['api_url'], json=data, headers=headers)
             return response.json()['choices'][0]['message']['content']
         
         elif service == 'Cohere':
@@ -114,9 +115,9 @@ def generate_summary(text, service, api_key):
             data = {
                 "prompt": prompt,
                 "model": "command",
-                "max_tokens": 1000
+                "max_tokens": 500
             }
-            response = requests.post(AI_SERVICES[service]['api_url'], json=data, headers=headers, timeout=60)
+            response = requests.post(AI_SERVICES[service]['api_url'], json=data, headers=headers)
             return response.json()['generations'][0]['text']
     
     except Exception as e:
@@ -143,6 +144,7 @@ def settings():
         <form method="POST">
             <select name="ai_service" class="form-select mb-3" required>
                 <option value="">Selecione o serviço...</option>
+                <option value="HuggingFace">HuggingFace</option>
                 <option value="OpenAI">OpenAI</option>
                 <option value="Cohere">Cohere</option>
             </select>
@@ -203,5 +205,7 @@ def process():
         </form>
     ''')
 
+if __name__ == '__main__':
+    app.run(debug=False)
 if __name__ == '__main__':
     app.run(debug=False)
